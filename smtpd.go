@@ -3,6 +3,8 @@ package smtpd
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -49,6 +51,7 @@ type Server struct {
 	ForceTLS  bool        // Force STARTTLS usage.
 
 	ProtocolLogger *log.Logger
+	CtxTerminate   context.Context
 }
 
 // Protocol represents the protocol used in the SMTP session
@@ -64,13 +67,15 @@ const (
 
 // Peer represents the client connecting to the server
 type Peer struct {
-	HeloName   string               // Server name used in HELO/EHLO command
-	Username   string               // Username from authentication, if authenticated
-	Password   string               // Password from authentication, if authenticated
-	Protocol   Protocol             // Protocol used, SMTP or ESMTP
-	ServerName string               // A copy of Server.Hostname
-	Addr       net.Addr             // Network address
-	TLS        *tls.ConnectionState // TLS Connection details, if on TLS
+	HeloName       string               // Server name used in HELO/EHLO command
+	Username       string               // Username from authentication, if authenticated
+	Password       string               // Password from authentication, if authenticated
+	Protocol       Protocol             // Protocol used, SMTP or ESMTP
+	ServerName     string               // A copy of Server.Hostname
+	Addr           net.Addr             // Network address
+	TLS            *tls.ConnectionState // TLS Connection details, if on TLS
+	ProtocolBuf    *bytes.Buffer
+	ProtocolLogger *log.Logger
 }
 
 // Error represents an Error reported in the SMTP session.
@@ -123,6 +128,8 @@ func (srv *Server) newSession(c net.Conn) (s *session) {
 		s.peer.TLS = &state
 	}
 
+	s.peer.ProtocolBuf = bytes.NewBuffer(nil)
+	s.peer.ProtocolLogger = log.New(s.peer.ProtocolBuf, "", log.Ldate|log.Lmicroseconds)
 	s.scanner = bufio.NewScanner(s.reader)
 
 	return
@@ -157,6 +164,12 @@ func (srv *Server) Serve(l net.Listener) error {
 		limiter = nil
 	}
 
+	if srv.CtxTerminate != nil {
+		go func() {
+			<-srv.CtxTerminate.Done()
+			l.Close()
+		}()
+	}
 	for {
 
 		conn, e := l.Accept()
@@ -292,6 +305,9 @@ func (session *session) welcome() {
 }
 
 func (session *session) reply(code int, message string) {
+	if session.peer.ProtocolLogger != nil {
+		session.peer.ProtocolLogger.Printf("%s >> %d %s", session.conn.RemoteAddr(), code, message)
+	}
 	session.logf("sending: %d %s", code, message)
 	fmt.Fprintf(session.writer, "%d %s\r\n", code, message)
 	session.flush()

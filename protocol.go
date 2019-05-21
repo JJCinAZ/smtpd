@@ -61,7 +61,9 @@ func parseLine(line string) (cmd command) {
 }
 
 func (session *session) handle(line string) {
-
+	if session.peer.ProtocolLogger != nil {
+		session.peer.ProtocolLogger.Printf("%s << %s", session.conn.RemoteAddr(), line)
+	}
 	cmd := parseLine(line)
 
 	// Commands are dispatched to the appropriate handler functions.
@@ -330,7 +332,8 @@ func (session *session) handleDATA(cmd command) {
 	}
 
 	session.reply(354, "Go ahead. End your data with <CR><LF>.<CR><LF>")
-	session.conn.SetDeadline(time.Now().Add(session.server.DataTimeout))
+	startTime := time.Now()
+	session.conn.SetDeadline(startTime.Add(session.server.DataTimeout))
 
 	data := &bytes.Buffer{}
 	reader := textproto.NewReader(session.reader).DotReader()
@@ -343,6 +346,12 @@ func (session *session) handleDATA(cmd command) {
 		// Accept and deliver message
 
 		session.envelope.Data = data.Bytes()
+
+		if session.peer.ProtocolLogger != nil {
+			session.peer.ProtocolLogger.Printf("%s << %d bytes (overall data transfer speed %0.f bits/sec)",
+				session.conn.RemoteAddr(), data.Len(),
+				float64(data.Len())*8.0/time.Now().Sub(startTime).Seconds())
+		}
 
 		if err := session.deliver(); err != nil {
 			session.error(err)
